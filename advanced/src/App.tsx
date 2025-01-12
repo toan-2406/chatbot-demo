@@ -1,8 +1,17 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { useAquanetBot } from 'aquanet-bot-lib';
+import { 
+  AquacultureService, 
+  LLMProviders,
+  AquacultureData,
+  AquacultureTaskType,
+  ILLMProvider
+} from 'aquanet-bot-lib';
 import { marked } from 'marked';
-import { Box, Container, Paper, Typography, TextField, Button, 
-  Tab, Tabs, IconButton, Chip, Tooltip, CircularProgress } from '@mui/material';
+import { 
+  Box, Container, Paper, Typography, TextField, Button, 
+  Tab, Tabs, IconButton, Chip, Tooltip, CircularProgress,
+  FormControl, InputLabel, Select, MenuItem
+} from '@mui/material';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -14,7 +23,7 @@ import {
   Tooltip as ChartTooltip,
   Legend
 } from 'chart.js';
-import { Refresh, Save, History, BugReport, Analytics } from '@mui/icons-material';
+import { Refresh, Save, BugReport, Analytics } from '@mui/icons-material';
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter';
 import json from 'react-syntax-highlighter/dist/esm/languages/hljs/json';
 import { githubGist } from 'react-syntax-highlighter/dist/esm/styles/hljs';
@@ -45,6 +54,8 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  taskType?: AquacultureTaskType;
+  data?: AquacultureData;
 }
 
 interface AnalyticsData {
@@ -62,6 +73,27 @@ function App() {
   const [question, setQuestion] = useState('');
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [streamingAnswer, setStreamingAnswer] = useState('');
+  const [selectedTask, setSelectedTask] = useState<AquacultureTaskType>(AquacultureTaskType.TECHNICAL_ADVICE);
+  const [aquaData, setAquaData] = useState<AquacultureData>({
+    environmentalData: {
+      waterQuality: {
+        temperature: 28,
+        pH: 7.5,
+        dissolvedOxygen: 5.2,
+      }
+    },
+    biologicalData: {
+      species: 'shrimp',
+      stage: 'juvenile',
+    },
+    metadata: {
+      farmId: 'farm-123',
+      pondId: 'pond-456',
+      timestamp: new Date(),
+      source: 'user-input'
+    }
+  });
+
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData>({
     labels: [],
     datasets: [{
@@ -71,83 +103,112 @@ function App() {
       tension: 0.4
     }]
   });
+
   const [debugInfo, setDebugInfo] = useState<any>({});
 
   const handleStream = useCallback((chunk: string) => {
     setStreamingAnswer(prev => prev + chunk);
   }, []);
 
-  const { loading, error, query } = useAquanetBot({
-    config: {
-      apiKey: API_KEY,
-      baseUrl: 'https://api.deepseek.com/v1',
+  // Khởi tạo AquacultureService
+  const aquaService = new AquacultureService({
+    provider: LLMProviders.DEEPSEEK,
+    apiKey: API_KEY,
+    model: 'deepseek-chat',
+    defaultParams: {
       temperature: 0.7,
       maxTokens: 2000,
-      responseFormat: 'stream',
-      onStream: handleStream,
-      aquacultureConfig: {
-        knowledgeDomains: [
-          'farming_techniques',
-          'water_quality',
-          'disease_management',
-          'feed_management',
-          'market_analysis'
-        ],
-        dataSources: ['research_papers', 'industry_standards', 'technical_guidelines'],
-        expertiseLevel: 'intermediate',
-        language: 'vi',
-        useIndustryTerms: true,
-        tools: {
-          waterCalculator: true,
-          farmingCalendar: true,
-          alertSystem: true,
-          diseaseIdentifier: true,
-          feedOptimizer: true
-        },
-        validation: {
-          requireSourceCitation: true,
-          confidenceScoring: true,
-          expertReviewThreshold: 0.8,
-          factCheckSources: ['trusted_research', 'government_data', 'industry_reports']
-        },
-        customization: {
-          speciesSpecific: ['shrimp'],
-          farmingMethods: ['intensive', 'semi_intensive'],
-          regionalGuidelines: ['mekong_delta'],
-          customPrompts: {
-            diseaseAlert: "Phát hiện sớm và đề xuất biện pháp xử lý khi phát hiện dấu hiệu bệnh",
-            waterQuality: "Theo dõi và đề xuất điều chỉnh các thông số chất lượng nước",
-            feedingSchedule: "Tối ưu hóa lịch cho ăn và khẩu phần theo giai đoạn phát triển"
-          }
-        }
-      }
-    },
+    }
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!question.trim()) return;
+    if (!question.trim() && !selectedTask) return;
 
     const startTime = Date.now();
     
     try {
       setStreamingAnswer('');
-      setChatHistory(prev => [...prev, {
+      console.log('Starting API call with task:', selectedTask);
+      
+      // Thêm câu hỏi vào lịch sử
+      const userMessage: ChatMessage = {
         role: 'user',
-        content: question,
-        timestamp: new Date()
-      }]);
+        content: question || 'Analyze data',
+        timestamp: new Date(),
+        taskType: selectedTask,
+        data: aquaData
+      };
+      setChatHistory(prev => [...prev, userMessage]);
 
-      const response = await query(question);
-
-      // Add streaming answer to chat history
-      setChatHistory(prev => [...prev, {
+      // Tạo message assistant trống để chuẩn bị cho streaming
+      const assistantMessage: ChatMessage = {
         role: 'assistant',
-        content: streamingAnswer,
-        timestamp: new Date()
-      }]);
+        content: '',
+        timestamp: new Date(),
+        taskType: selectedTask
+      };
+      setChatHistory(prev => [...prev, assistantMessage]);
 
-      // Update analytics
+      // Tạo prompt dựa trên task type và data
+      let prompt = '';
+      switch (selectedTask) {
+        case AquacultureTaskType.WATER_QUALITY_ANALYSIS:
+          prompt = `Analyze water quality data:\nTemperature: ${aquaData.environmentalData.waterQuality.temperature}°C\npH: ${aquaData.environmentalData.waterQuality.pH}\nDissolved Oxygen: ${aquaData.environmentalData.waterQuality.dissolvedOxygen} mg/L`;
+          break;
+        case AquacultureTaskType.DISEASE_DIAGNOSIS:
+          prompt = `Diagnose potential diseases for ${aquaData.biologicalData.species} at ${aquaData.biologicalData.stage} stage based on water parameters:\nTemperature: ${aquaData.environmentalData.waterQuality.temperature}°C\npH: ${aquaData.environmentalData.waterQuality.pH}\nDissolved Oxygen: ${aquaData.environmentalData.waterQuality.dissolvedOxygen} mg/L`;
+          break;
+        // ... other cases with appropriate prompts
+        default:
+          prompt = `Analyze aquaculture data for ${aquaData.biologicalData.species} at ${aquaData.biologicalData.stage} stage:\n${JSON.stringify(aquaData, null, 2)}`;
+      }
+
+      if (question.trim()) {
+        prompt += `\n\nUser question: ${question}`;
+      }
+
+      console.log('Generated prompt:', prompt);
+
+      // Gọi trực tiếp API thông qua service
+      let response = '';
+      switch (selectedTask) {
+        case AquacultureTaskType.WATER_QUALITY_ANALYSIS:
+          response = await aquaService.analyzeWaterQuality(aquaData);
+          break;
+        case AquacultureTaskType.DISEASE_DIAGNOSIS:
+          response = await aquaService.diagnoseDiseases(aquaData);
+          break;
+        case AquacultureTaskType.FEEDING_OPTIMIZATION:
+          response = await aquaService.optimizeFeeding(aquaData);
+          break;
+        case AquacultureTaskType.GROWTH_PREDICTION:
+          response = await aquaService.predictGrowth(aquaData);
+          break;
+        case AquacultureTaskType.COST_ANALYSIS:
+          response = await aquaService.analyzeCosts(aquaData);
+          break;
+        case AquacultureTaskType.TECHNICAL_ADVICE:
+          response = await aquaService.getTechnicalAdvice(aquaData);
+          break;
+        case AquacultureTaskType.MARKET_ANALYSIS:
+          response = await aquaService.analyzeMarket(aquaData);
+          break;
+        case AquacultureTaskType.ENVIRONMENTAL_IMPACT:
+          response = await aquaService.assessEnvironmentalImpact(aquaData);
+          break;
+      }
+
+      console.log('Received response:', response);
+
+      // Cập nhật chat history với response
+      setChatHistory(prev => {
+        const newHistory = [...prev];
+        newHistory[newHistory.length - 1].content = response;
+        return newHistory;
+      });
+
+      // Cập nhật analytics
       const responseTime = Date.now() - startTime;
       setAnalyticsData(prev => ({
         labels: [...prev.labels, new Date().toLocaleTimeString()],
@@ -157,50 +218,29 @@ function App() {
         }]
       }));
 
-      // Update debug info
+      // Cập nhật debug info
       setDebugInfo(prev => ({
         ...prev,
         lastQuery: {
-          question,
+          taskType: selectedTask,
+          data: aquaData,
+          prompt,
+          response,
           responseTime,
           timestamp: new Date().toISOString()
         }
       }));
 
       setQuestion('');
-      setStreamingAnswer(''); // Reset streaming answer
+      setStreamingAnswer('');
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Error during API call:', err);
       setDebugInfo(prev => ({
         ...prev,
         lastError: err
       }));
     }
   };
-
-  // Add streaming message to chat history
-  useEffect(() => {
-    if (streamingAnswer && chatHistory.length > 0) {
-      const lastMessage = chatHistory[chatHistory.length - 1];
-      if (lastMessage.role === 'assistant') {
-        // Update last assistant message
-        setChatHistory(prev => [
-          ...prev.slice(0, -1),
-          {
-            ...lastMessage,
-            content: streamingAnswer
-          }
-        ]);
-      } else {
-        // Add new assistant message
-        setChatHistory(prev => [...prev, {
-          role: 'assistant',
-          content: streamingAnswer,
-          timestamp: new Date()
-        }]);
-      }
-    }
-  }, [streamingAnswer]);
 
   const clearHistory = () => {
     setChatHistory([]);
@@ -244,24 +284,40 @@ function App() {
       <Box hidden={activeTab !== 0}>
         <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
           <Box component="form" onSubmit={handleSubmit}>
+            <FormControl fullWidth sx={{ mb: 2 }}>
+              <InputLabel>Task Type</InputLabel>
+              <Select
+                value={selectedTask}
+                onChange={(e) => setSelectedTask(e.target.value as AquacultureTaskType)}
+                label="Task Type"
+              >
+                {Object.values(AquacultureTaskType).map((task) => (
+                  <MenuItem key={task} value={task}>
+                    {task.replace(/_/g, ' ').toUpperCase()}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
             <TextField
               fullWidth
               multiline
               rows={4}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Nhập câu hỏi về nuôi trồng thủy sản..."
+              placeholder="Nhập câu hỏi hoặc để trống để phân tích dữ liệu..."
               variant="outlined"
               sx={{ mb: 2 }}
             />
+
             <Box sx={{ display: 'flex', gap: 2 }}>
               <Button
                 type="submit"
                 variant="contained"
-                disabled={loading || !question.trim()}
-                startIcon={loading ? <CircularProgress size={20} /> : null}
+                disabled={!selectedTask}
+                startIcon={streamingAnswer ? <CircularProgress size={20} /> : null}
               >
-                {loading ? 'Đang xử lý...' : 'Gửi câu hỏi'}
+                {streamingAnswer ? 'Đang xử lý...' : 'Phân tích'}
               </Button>
               <Tooltip title="Xóa lịch sử">
                 <IconButton onClick={clearHistory} color="default">
@@ -276,12 +332,6 @@ function App() {
             </Box>
           </Box>
         </Paper>
-
-        {error && (
-          <Paper elevation={3} sx={{ p: 2, mb: 3, bgcolor: '#fdf3f2' }}>
-            <Typography color="error">Lỗi: {error.message}</Typography>
-          </Paper>
-        )}
 
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {chatHistory.map((msg, idx) => (
@@ -301,6 +351,13 @@ function App() {
                   color={msg.role === 'assistant' ? 'primary' : 'default'}
                   size="small"
                 />
+                {msg.taskType && (
+                  <Chip 
+                    label={msg.taskType.replace(/_/g, ' ').toUpperCase()}
+                    color="secondary"
+                    size="small"
+                  />
+                )}
                 <Typography variant="caption" color="text.secondary">
                   {msg.timestamp.toLocaleString()}
                 </Typography>
@@ -311,7 +368,17 @@ function App() {
                   dangerouslySetInnerHTML={{ __html: marked(msg.content) }}
                 />
               ) : (
-                <Typography>{msg.content}</Typography>
+                <>
+                  <Typography>{msg.content}</Typography>
+                  {msg.data && (
+                    <Box sx={{ mt: 1 }}>
+                      <Typography variant="caption" color="text.secondary">Input Data:</Typography>
+                      <SyntaxHighlighter language="json" style={githubGist}>
+                        {JSON.stringify(msg.data, null, 2)}
+                      </SyntaxHighlighter>
+                    </Box>
+                  )}
+                </>
               )}
             </Paper>
           ))}
